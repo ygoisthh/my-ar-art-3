@@ -1,51 +1,170 @@
-<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>My AR Art</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <!-- A-Frame と MindAR を読み込み -->
-    <script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.1.4/dist/mindar-image-aframe.prod.js"></script>
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>My AR Art</title>
 
-    <style>
-      body { margin: 0; overflow: hidden; }
-    </style>
-  </head>
+  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
 
-  <body>
-    <!-- 画像トラッキングを使う WebAR -->
-    <a-scene mindar-image="imageTargetSrc: ./targets.mind;"
-             vr-mode-ui="enabled: false"
-             device-orientation-permission-ui="enabled: false"
-             embedded>
+  <style>
+    html,body{margin:0;height:100%;background:#000;overflow:hidden;}
+    #overlay{
+      position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+      background:rgba(0,0,0,.55); z-index:9999;
+      color:#fff; font:14px/1.4 system-ui; text-align:center; padding:16px;
+    }
+    #btn{padding:12px 18px;border-radius:999px;border:0;font-size:16px;}
+    #status{margin-top:10px;opacity:.9}
 
-      <!-- カメラ -->
-      <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+    /* 背景：カメラ(video) */
+    video{
+      position:fixed !important; inset:0 !important;
+      width:100% !important; height:100% !important;
+      object-fit:cover !important; z-index:0 !important;
+    }
+    /* AR描画：a-scene と canvas を video より上へ */
+    a-scene{
+      position:fixed !important; inset:0 !important;
+      width:100% !important; height:100% !important;
+      z-index:2 !important;
+    }
+    canvas{
+      position:fixed !important; inset:0 !important;
+      width:100% !important; height:100% !important;
+      z-index:3 !important;
+    }
+    #overlay{z-index:9999 !important;}
+  </style>
+</head>
 
-      <!-- トラッキングされたら表示する内容 -->
-      <a-entity mindar-image-target="targetIndex: 0">
+<body>
+  <div id="overlay">
+    <div>
+      <button id="btn">ARを開始</button>
+      <div id="status">押したらカメラ許可 → 作品（ターゲット画像）を映してください</div>
+    </div>
+  </div>
 
-        <!-- ★ 文章を表示したい場合（どちらかだけ使う） -->
-        <a-text value="ここに文章が表示されます"
-                color="#FFFFFF"
-                align="center"
-                width="2"
-                position="0 0 0">
-        </a-text>
+  <a-scene
+    id="scene"
+    mindar-image="imageTargetSrc: ./targets.mind; autoStart: false; filterMinCF: 0.001; filterBeta: 0.001;"
+    vr-mode-ui="enabled:false"
+    device-orientation-permission-ui="enabled:false"
+    embedded>
 
-        <!-- ★ 画像を表示したい場合（文章と切り替えで使う） -->
-        <!--
-        <a-image src="./art.png"
-                 width="1.5"
-                 height="1.5"
-                 position="0 0 0">
-        </a-image>
-        -->
+    <a-camera position="0 0 0" look-controls="enabled:false"></a-camera>
 
-      </a-entity>
+    <a-entity id="target" mindar-image-target="targetIndex: 0">
+     <a-image
+  id="art"
+  src="./art.png"
+  width="0.39"
+  height="0.39"
+  position="0.005 0.18 0.04"
+  opacity="0"
+  scale="0.95 0.95 0.95"
+  animation__fade="property: opacity; from: 0; to: 1; dur: 900; easing: easeOutCubic; startEvents: ar-show"
+  animation__pulse="property: scale; dir: alternate;
+                  dur: 2000; easing: easeInOutSine; loop: true;
+                  from: 0.95 0.95 0.95;
+                  to: 1.05 1.05 1.05"
+  animation__breath="property: opacity; dir: alternate; dur: 2000; easing: easeInOutSine; loop: true; from: 0.75; to: 1; delay: 900; startEvents: ar-show"
+  animation__fadeout="property: opacity; to: 0; dur: 800; easing: easeOutCubic; startEvents: ar-hide">
+</a-image>
 
-    </a-scene>
-  </body>
-</html>
+
+    </a-entity>
+
+  </a-scene>
+
+  <script>
+    const overlay = document.getElementById('overlay');
+    const btn = document.getElementById('btn');
+    const status = document.getElementById('status');
+    const sceneEl = document.getElementById('scene');
+    const targetEl = document.getElementById('target');
+    const imgEl = document.getElementById('art');
+
+    function waitForSystem(timeoutMs = 6000) {
+      return new Promise((resolve, reject) => {
+        const t0 = Date.now();
+        const timer = setInterval(() => {
+          const sys = sceneEl.systems && sceneEl.systems["mindar-image-system"];
+          if (sys && typeof sys.start === "function") {
+            clearInterval(timer);
+            resolve(sys);
+          }
+          if (Date.now() - t0 > timeoutMs) {
+            clearInterval(timer);
+            reject(new Error("mindar-image-system が見つかりません（初期化失敗）"));
+          }
+        }, 100);
+      });
+    }
+
+    // ここが「フェードイン→揺れ開始」のトリガー
+    let isShown = false;
+let lostTimer = null;
+
+targetEl.addEventListener('targetFound', () => {
+  // 一瞬のlost→foundで再開始しないように、消去予約をキャンセル
+  if (lostTimer) { clearTimeout(lostTimer); lostTimer = null; }
+
+  // すでに表示中なら ar-show を再発火しない（←跳ね防止の要）
+  if (isShown) return;
+
+  isShown = true;
+  imgEl.emit('ar-show');
+  status.textContent="FOUND";
+});
+
+targetEl.addEventListener('targetLost', () => {
+  // すでに非表示扱いなら何もしない
+  if (!isShown) return;
+
+  // 200msだけ様子見：すぐ復帰するなら消さない（チラつき防止）
+  lostTimer = setTimeout(() => {
+    imgEl.emit('ar-hide');
+
+    // fadeout(dur:800) が終わった頃に「非表示」に戻す
+    setTimeout(() => { isShown = false; }, 800);
+
+    lostTimer = null;
+  }, 200);
+});
+
+
+    btn.addEventListener('click', async () => {
+      try {
+        btn.disabled = true;
+        status.textContent = "起動中…";
+
+        const [tRes, aRes] = await Promise.all([
+          fetch("./targets.mind", { cache: "no-store" }),
+          fetch("./art.png", { cache: "no-store" })
+        ]);
+        if (!tRes.ok) throw new Error("targets.mind が見つかりません（" + tRes.status + "）");
+        if (!aRes.ok) throw new Error("art.png が見つかりません（" + aRes.status + "）");
+
+        if (!sceneEl.hasLoaded) {
+          await new Promise(res => sceneEl.addEventListener("loaded", res, { once: true }));
+        }
+
+        const arSystem = await waitForSystem();
+        await arSystem.start();
+
+        overlay.style.display = "none";
+      } catch (e) {
+        alert("AR開始に失敗しました。\n" + (e?.message ?? e));
+        status.textContent = "失敗: " + (e?.message ?? e);
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>　　　
+
+
